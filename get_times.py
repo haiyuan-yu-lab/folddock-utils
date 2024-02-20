@@ -30,51 +30,57 @@ def get_resource_usages(resources, p1_res, p2_res):
     memory_mean = []
     stages = ['UNALIGN', 'CDHIT', 'oxmatch', 'fuse_msas', 'AlphaFold 1',
               'AlphaFold 2', 'AlphaFold 3', 'AlphaFold 4', 'AlphaFold 5']
-    times = {stage: [] for stage in stages}
+    ts = {stage: [] for stage in stages}
     for res in resources:
         times = res["times"]
-        memory_min.append(min(res["mem_array"]))
-        memory_mean.append(np.mean(res["mem_array"]))
-        memory_max.append(max(res["mem_array"]))
+        if "mem_array" in res:
+            try:
+                memory_min.append(min(res["mem_array"]))
+                memory_mean.append(np.mean(res["mem_array"]))
+                memory_max.append(max(res["mem_array"]))
+            except TypeError:
+                print(res)
+                exit(0)
         feature_duration = 0
         for stage in stages:
             try:
                 duration = times[stage]["end"] - times[stage]["start"]
-                times[stage].append(duration)
-                if stage.startswith("Alpha"):
-                    prediction_duration += duration.seconds
-                else:
-                    feature_duration += duration.seconds
+                ts[stage].append(duration.seconds)
             except KeyError:
                 print(stage, times)
         time_hhblits = p1_res["times"]["HHBLITS"]
+        mem_hhblits = p1_res["mem_array"] + p2_res["mem_array"]
         duration_hhblits = (time_hhblits["end"]
                             - time_hhblits["start"]).seconds
         time_hhblits = p2_res["times"]["HHBLITS"]
         duration_hhblits += (time_hhblits["end"]
                              - time_hhblits["start"]).seconds
         feature_duration += duration_hhblits
-        feature_duration += (max(times["UNALIGN"])
-                             + max(times["CDHIT"])
-                             + max(times["oxmatch"]))
-        prediction_duration = (max(times["AlphaFold 1"]),
-                               + max(times["AlphaFold 2"])
-                               + max(times["AlphaFold 3"])
-                               + max(times["AlphaFold 4"])
-                               + max(times["AlphaFold 5"]))
+        feature_duration += (max(ts["UNALIGN"])
+                             + max(ts["CDHIT"])
+                             + max(ts["CDHIT"])
+                             + max(ts["oxmatch"], default=0)
+                             + max(ts["fuse_msas"], default=0))
+        prediction_duration = (max(ts["AlphaFold 1"])
+                               + max(ts["AlphaFold 2"])
+                               + max(ts["AlphaFold 3"])
+                               + max(ts["AlphaFold 4"])
+                               + max(ts["AlphaFold 5"]))
     return (
         max(memory_min),
         max(memory_mean),
         max(memory_max),
-        max(times["UNALIGN"]),
-        max(times["CDHIT"]),
-        max(times["oxmatch"]),
-        max(times["fuse_msas"]),
-        max(times["AlphaFold 1"]),
-        max(times["AlphaFold 2"]),
-        max(times["AlphaFold 3"]),
-        max(times["AlphaFold 4"]),
-        max(times["AlphaFold 5"]),
+        max(mem_hhblits),
+        max(ts["UNALIGN"]),
+        max(ts["CDHIT"]),
+        max(ts["oxmatch"], default=0),
+        max(ts["fuse_msas"], default=0),
+        max(ts["AlphaFold 1"]),
+        max(ts["AlphaFold 2"]),
+        max(ts["AlphaFold 3"]),
+        max(ts["AlphaFold 4"]),
+        max(ts["AlphaFold 5"]),
+        duration_hhblits,
         feature_duration,
         prediction_duration,
         feature_duration + prediction_duration)
@@ -120,19 +126,19 @@ def run(folddock_output_dir: Path,
             if [p1, p2] in interactions:
                 interaction_to_results[p1, p2].append(outfile)
                 files_found += 1
-    print(f"found {len(files_found)} result files")
+    print(f"found {files_found} result files")
 
     resources = {}
     for (p1, p2), outfiles in interaction_to_results.items():
         for outfile in outfiles:
             memory, times = get_time_and_memory(outfile)
-            if (p1, p2) not in resources:
-                resources[p1, p2] = {}
-            resources[p1, p2].append({
-                "mem_array": memory,
-                "times": times,
-            })
-    print(list(resources[p1, p2]["times"].keys()))
+            if memory:
+                if (p1, p2) not in resources:
+                    resources[p1, p2] = []
+                resources[p1, p2].append({
+                    "mem_array": memory,
+                    "times": times,
+                })
     for prot, outfile in protein_to_results.items():
         memory, times = get_time_and_memory(outfile)
         resources[prot] = {
@@ -140,15 +146,18 @@ def run(folddock_output_dir: Path,
             "times": times
         }
     with output_file.open("w") as of:
-        of.write("protein1\tprotein2\tmem min\tmem mean\tmem max\t"
+        of.write("protein1\tprotein2\tmem min\tmem mean\tmem max\tmem hhblits\t"
                  "time UNALIGN\ttime CDHIT\ttime oxmatch\ttime fuse_msas\t"
                  "time AlphaFold 1\ttime AlphaFold 2\ttime AlphaFold 3\t"
                  "time AlphaFold 4\ttime AlphaFold 5\ttime HHBLITS\t"
                  "time features\ttime prediction\ttime total\n")
         for (p1, p2), _ in interaction_to_results.items():
+            if (p1, p2) not in resources:
+                continue
             (memory_min,
              memory_mean,
              memory_max,
+             memory_hhblits,
              timesUNALIGN,
              timesCDHIT,
              timesoxmatch,
@@ -158,6 +167,7 @@ def run(folddock_output_dir: Path,
              timesAlphaFold3,
              timesAlphaFold4,
              timesAlphaFold5,
+             duration_hhblits,
              feature_duration,
              prediction_duration,
              total_duration) = get_resource_usages(resources[p1, p2],
@@ -167,6 +177,7 @@ def run(folddock_output_dir: Path,
                      f"\t{memory_min}"
                      f"\t{memory_mean}"
                      f"\t{memory_max}"
+                     f"\t{memory_hhblits}"
                      f"\t{timesUNALIGN}"
                      f"\t{timesCDHIT}"
                      f"\t{timesoxmatch}"
@@ -176,6 +187,7 @@ def run(folddock_output_dir: Path,
                      f"\t{timesAlphaFold3}"
                      f"\t{timesAlphaFold4}"
                      f"\t{timesAlphaFold5}"
+                     f"\t{duration_hhblits}"
                      f"\t{feature_duration}"
                      f"\t{prediction_duration}"
                      f"\t{total_duration}\n")
